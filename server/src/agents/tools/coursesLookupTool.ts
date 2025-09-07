@@ -7,87 +7,105 @@ import { Collection } from "mongodb";
 // Factory function: nhận collection để tạo tool
 export function createCourseLookupTool(collection: Collection) {
   return (tool as any)(
-    // Hàm chạy khi tool được gọi
-    async ({ query, n = 10 }: { query: string; n?: number }) => {
-      try {
-        console.log("Item lookup tool called with query:", query);
+      // The actual function that will be executed when tool is called
+      async ({ query, n = 10 }: { query: string; n?: number }) => {
+        try {
+          console.log("Item lookup tool called with query:", query)
 
-        // Kiểm tra collection có dữ liệu không
-        const totalCount = await collection.countDocuments();
-        if (totalCount === 0) {
-          return JSON.stringify({
-            error: "No items found in inventory",
-            message: "The inventory database appears to be empty",
-            count: 0,
-          });
-        }
+          // Check if database has any data at all
+          const totalCount = await collection.countDocuments()
+          console.log(`Total documents in collection: ${totalCount}`)
 
-        // Tạo vector store (dùng Google Gemini embeddings)
-        const vectorStore = new MongoDBAtlasVectorSearch(
-          new GoogleGenerativeAIEmbeddings({
-            apiKey: process.env.GOOGLE_API_KEY!,
-            model: "text-embedding-004",
-          }),
-          {
-            collection: collection,
-            indexName: "vector_index",   // Index bạn đã tạo trong MongoDB Atlas
-            textKey: "embedding_text",
-            embeddingKey: "embedding",
-          }
-        );
-
-        console.log("Performing vector search...");
-        const result = await vectorStore.similaritySearchWithScore(query, n);
-        console.log(`Vector search returned ${result.length} results`);
-
-        // Nếu không có kết quả thì fallback sang text search
-        if (result.length === 0) {
-          console.log("No vector results, fallback to text search...");
-          const textResults = await collection
-            .find({
-              $or: [
-                { item_name: { $regex: query, $options: "i" } },
-                { item_description: { $regex: query, $options: "i" } },
-                { categories: { $regex: query, $options: "i" } },
-                { embedding_text: { $regex: query, $options: "i" } },
-              ],
+          // Early return if database is empty
+          if (totalCount === 0) {
+            console.log("Collection is empty")
+            return JSON.stringify({ 
+              error: "No items found in inventory", 
+              message: "The inventory database appears to be empty",
+              count: 0 
             })
-            .limit(n)
-            .toArray();
+          }
 
+
+          // Configuration for MongoDB Atlas Vector Search
+          const dbConfig = {
+            collection: collection,           // MongoDB collection to search
+            indexName: "vector_index",       // Name of the vector search index
+            textKey: "embedding_text",       // Field containing the text used for embeddings
+            embeddingKey: "embedding",       // Field containing the vector embeddings
+          }
+
+          // Create vector store instance for semantic search using Google Gemini embeddings
+          const vectorStore = new MongoDBAtlasVectorSearch(
+            new GoogleGenerativeAIEmbeddings({
+              apiKey: process.env.GOOGLE_API_KEY, // Google API key from environment
+              model: "text-embedding-004",         // Gemini embedding model
+            }),
+            dbConfig
+          )
+
+          console.log("Performing vector search...")
+          // Perform semantic search using vector embeddings
+          const result = await vectorStore.similaritySearchWithScore(query, n)
+          console.log(`Vector search returned ${result.length} results`)
+          
+          // If vector search returns no results, fall back to text search
+          if (result.length === 0) {
+            console.log("Vector search returned no results, trying text search...")
+            // MongoDB text search using regular expressions
+            const textResults = await collection.find({
+              $or: [ // OR condition - match any of these fields
+                { name: { $regex: query, $options: 'i' } },        // Case-insensitive search in item name
+                { level: { $regex: query, $options: 'i' } }, // Case-insensitive search in description
+                { description: { $regex: query, $options: 'i' } },       // Case-insensitive search in categories
+                { bandTarget: { $regex: query, $options: 'i' } }    // Case-insensitive search in embedding text
+              ]
+            }).limit(n).toArray() // Limit results and convert to array
+            
+            console.log(`Text search returned ${textResults.length} results`)
+            // Return text search results as JSON string
+            return JSON.stringify({
+              results: textResults,
+              searchType: "text",    // Indicate this was a text search
+              query: query,
+              count: textResults.length
+            })
+          }
+
+          // Return vector search results as JSON string
           return JSON.stringify({
-            results: textResults,
-            searchType: "text",
-            query,
-            count: textResults.length,
-          });
+            results: result,
+            searchType: "vector",   // Indicate this was a vector search
+            query: query,
+            count: result.length
+          })
+          
+        } catch (error: any) {
+          // Log detailed error information for debugging
+          console.error("Error in item lookup:", error)
+          console.error("Error details:", {
+            message: error.message,
+            stack: error.stack,
+            name: error.name
+          })
+          
+          // Return error information as JSON string
+          return JSON.stringify({ 
+            error: "Failed to search inventory", 
+            details: error.message,
+            query: query
+          })
         }
-
-        // Trả về kết quả vector search
-        return JSON.stringify({
-          results: result,
-          searchType: "vector",
-          query,
-          count: result.length,
-        });
-      } catch (error: any) {
-        console.error("Error in item lookup:", error);
-        return JSON.stringify({
-          error: "Failed to search inventory",
-          details: error.message,
-          query: query,
-        });
+      },
+      // Tool metadata and schema definition
+      {
+        name: "courses_lookup",                                    // Tên tool
+        description: "Tìm kiếm thông tin các khóa học trong cơ sở dữ liệu", // Mô tả tool
+        schema: z.object({                                        // Xác thực dữ liệu đầu vào
+          query: z.string().describe("Từ khóa tìm kiếm khóa học"), // Tham số bắt buộc: từ khóa tìm kiếm
+          n: z.number().optional().default(10)                    // Tham số tùy chọn: số lượng kết quả trả về
+            .describe("Số lượng kết quả muốn trả về"),
+        }),
       }
-    },
-    // Metadata cho tool
-    {
-      name: "course_lookup",
-      description:
-        "Gathers furniture item details from the Inventory database",
-      schema: z.object({
-        query: z.string().describe("The search query"),
-        n: z.number().optional().default(10).describe("Number of results to return"),
-      }),
-    }
-  );
+    )
 }

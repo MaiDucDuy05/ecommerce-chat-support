@@ -47,7 +47,7 @@ export async function callAgent(client: MongoClient, query: string, thread_id: s
     // Database configuration
     const dbName = "inventory_database"        // Name of the MongoDB database
     const db = client.db(dbName)              // Get database instance
-    const collection = db.collection("items") // Get the 'items' collection
+    const collection = db.collection("courses") // Get the 'items' collection
 
     // Define the state structure for the agent workflow
     const GraphState = Annotation.Root({
@@ -79,9 +79,6 @@ export async function callAgent(client: MongoClient, query: string, thread_id: s
             })
           }
 
-          // Get sample documents for debugging purposes
-          const sampleDocs = await collection.find({}).limit(3).toArray()
-          console.log("Sample documents:", sampleDocs)
 
           // Configuration for MongoDB Atlas Vector Search
           const dbConfig = {
@@ -111,10 +108,10 @@ export async function callAgent(client: MongoClient, query: string, thread_id: s
             // MongoDB text search using regular expressions
             const textResults = await collection.find({
               $or: [ // OR condition - match any of these fields
-                { item_name: { $regex: query, $options: 'i' } },        // Case-insensitive search in item name
-                { item_description: { $regex: query, $options: 'i' } }, // Case-insensitive search in description
-                { categories: { $regex: query, $options: 'i' } },       // Case-insensitive search in categories
-                { embedding_text: { $regex: query, $options: 'i' } }    // Case-insensitive search in embedding text
+                { name: { $regex: query, $options: 'i' } },        // Case-insensitive search in item name
+                { level: { $regex: query, $options: 'i' } }, // Case-insensitive search in description
+                { description: { $regex: query, $options: 'i' } },       // Case-insensitive search in categories
+                { bandTarget: { $regex: query, $options: 'i' } }    // Case-insensitive search in embedding text
               ]
             }).limit(n).toArray() // Limit results and convert to array
             
@@ -155,12 +152,12 @@ export async function callAgent(client: MongoClient, query: string, thread_id: s
       },
       // Tool metadata and schema definition
       {
-        name: "item_lookup",                                    // Tool name that the AI will reference
-        description: "Gathers furniture item details from the Inventory database", // Description for the AI
-        schema: z.object({                                      // Input validation schema
-          query: z.string().describe("The search query"),      // Required string parameter
-          n: z.number().optional().default(10)                 // Optional number parameter with default
-            .describe("Number of results to return"),
+        name: "item_lookup",                                    // Tên tool
+        description: "Tìm kiếm thông tin các khóa học trong cơ sở dữ liệu", // Mô tả tool
+        schema: z.object({                                        // Xác thực dữ liệu đầu vào
+          query: z.string().describe("Từ khóa tìm kiếm khóa học"), // Tham số bắt buộc: từ khóa tìm kiếm
+          n: z.number().optional().default(10)                    // Tham số tùy chọn: số lượng kết quả trả về
+            .describe("Số lượng kết quả muốn trả về"),
         }),
       }
     )
@@ -172,7 +169,7 @@ export async function callAgent(client: MongoClient, query: string, thread_id: s
 
     // Initialize the AI model (Google's Gemini)
     const model = new ChatGoogleGenerativeAI({
-      model: "gemini-1.5-flash",         //  Use Gemini 1.5 Flash model
+      model: "gemini-2.5-flash",         //  Use Gemini 2.5 Flash model
       temperature: 0,                    // Deterministic responses (no randomness)
       maxRetries: 0,                     // Disable built-in retries (we handle our own)
       apiKey: process.env.GOOGLE_API_KEY, // Google API key from environment
@@ -195,26 +192,28 @@ export async function callAgent(client: MongoClient, query: string, thread_id: s
       return retryWithBackoff(async () => { // Wrap in retry logic
         // Create a structured prompt template
         const prompt = ChatPromptTemplate.fromMessages([
-          [
-            "system",
-            `You are an AI Learning Assistant for an online education platform. 
-        Your primary role is to guide, support, and assist students with their learning journey.
+  [
+    "system",
+        `Bạn là một Trợ lý Sale AI cho nền tảng giáo dục trực tuyến.
+    Vai trò chính của bạn là tư vấn, giới thiệu và hỗ trợ học sinh chọn và đăng ký các khóa học có trong hệ thống.
 
-        IMPORTANT: You have access to a course_lookup tool that searches the course catalog database. 
-        - ALWAYS use this tool whenever students ask about available courses, subjects, or training programs — even if the tool returns errors or no results.  
-        - If results are found, summarize the key details (title, subject, difficulty, and short description).  
-        - If no results or errors occur, acknowledge it and politely offer help in other ways (e.g., recommend general study tips, direct them to support).  
-        - If the database appears empty, inform the student that the catalog may be updating and suggest they check back later.
+    QUAN TRỌNG: Bạn có quyền truy cập công cụ item_lookup để tìm kiếm thông tin khóa học.
+    - LUÔN sử dụng công cụ này khi học sinh hỏi về các khóa học, môn học hoặc chương trình đào tạo.
+    - CHỈ giới thiệu các khóa học thực sự có trong hệ thống theo kết quả trả về của tool.
+    - Nếu tìm thấy kết quả, nêu rõ các thông tin chính: tên khóa học, môn học, trình độ, thời lượng, giá, và bất kỳ ưu đãi khuyến mãi nào.
+    - Nếu không có kết quả hoặc xảy ra lỗi, thông báo lịch sự và gợi ý các khóa học phổ biến hoặc ưu đãi hiện có.
+    - Nếu cơ sở dữ liệu trống, thông báo cho học sinh rằng danh mục khóa học đang được cập nhật và khuyên họ kiểm tra lại sau.
 
-        Guidelines:
-        - Be polite, supportive, and encouraging.  
-        - Keep answers concise but informative.  
-        - When asked general learning questions (not course search), respond directly without using the tool.  
+    Hướng dẫn chung:
+    - Thân thiện, chuyên nghiệp và thuyết phục.
+    - Khuyến khích học sinh đăng ký khóa học.
+    - Trả lời ngắn gọn, hấp dẫn và dễ hiểu.
+    - Khi học sinh hỏi những câu hỏi chung không liên quan đến khóa học, trả lời lịch sự mà không sử dụng tool.
 
-        Current time: {time}`,
-          ],
-          new MessagesPlaceholder("messages"),
-        ])
+    Thời gian hiện tại: {time}`,
+      ],
+      new MessagesPlaceholder("messages"),
+    ]);
 
         // Fill in the prompt template with actual values
         const formattedPrompt = await prompt.formatMessages({
